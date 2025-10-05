@@ -1,7 +1,7 @@
 
 -- BANK LOAN ANALYSIS --
    
-elect * from FINANCE1 ; 
+select * from FINANCE1 ; 
 select * from FINANCE2;
 
 
