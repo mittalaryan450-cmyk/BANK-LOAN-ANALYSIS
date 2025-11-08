@@ -1,0 +1,175 @@
+--================================================================
+-- BANK LOAN ANALYSIS SCRIPT (Running on clean 'LoanData' table)
+--================================================================
+
+-- Set all queries to run against your clean database
+USE LoanProjectDB;
+GO
+
+-- working on some of the key metrics 
+
+-- total loan amount 
+select sum(coalesce(loan_amnt, 0)) as total_loan_amount 
+from LoanData;
+
+--Find the maximum annual income among all loan applicants 
+select max(annual_inc) as maximum_annual_inc from LoanData;
+
+-- Find the minimum annual income among all loan applicants
+select min(annual_inc) as minimun_annual_inc from LoanData;
+
+-- Calculate the average revolving balance. revolving balance is the debt 
+select 
+    round(avg(revol_bal), 0) as avg_revol_bal
+from LoanData;
+
+--total loan applications 
+select count(id) as total_Applicants 
+from LoanData;
+
+-- Calculate the total invested funded amount for each month based on the last payment month
+-- Note: This is now much simpler using the clean 'last_pymnt_date' column
+select 
+    MONTH(last_pymnt_date) AS [Month],
+    sum(funded_amnt_inv) AS Funded_Amount_Inv  
+from LoanData
+WHERE
+    last_pymnt_date IS NOT NULL
+group by 
+    MONTH(last_pymnt_date)
+order by 
+    [Month];
+
+-- group total loan amounts by home ownership type and order them from highest to lowest
+SELECT
+    home_ownership,
+    SUM(loan_amnt) AS [Total_Loan_Amount]
+FROM LoanData
+GROUP BY home_ownership
+ORDER BY SUM(loan_amnt) DESC;
+
+-- KPI 1 
+-- Calculate the total loan amount for each year, with a grand total summary row.
+select 
+    isnull(cast(YEAR(issue_date) as varchar(20)), 'grand total') AS [Year], 
+    SUM(loan_amnt) AS [Total_Loan_Amount]
+FROM LoanData
+GROUP BY YEAR(issue_date) with rollup;
+    
+--KPI 2 
+--Calculate the total revolving balance for each loan grade and sub-grade.
+select 
+    grade, 
+    sub_grade,
+    sum(revol_bal) as revolving_bal
+from LoanData
+GROUP BY grade, sub_grade
+ORDER BY grade, sub_grade;
+
+-- KPI 3: Compare total payments from 'Verified' vs. 'Not Verified' applicants.
+SELECT
+    verification_status,
+    SUM(total_pymnt) AS [Total_Payment]
+FROM LoanData
+WHERE verification_status IN ('Verified', 'Not Verified')
+GROUP BY verification_status;
+
+-- KPI 4: List the state, issue month, and status for each loan.
+-- Note: This is a detail query. For Power BI, you would do this by importing the main table and using a table visual.
+SELECT
+    addr_state AS [State],
+    MONTH(issue_date) AS [Month],
+    loan_status AS [Loan_Status]
+FROM LoanData;
+
+-- KPI 5: Calculate the sum of the last payment amount for each home ownership category.
+SELECT
+    home_ownership,
+    SUM(last_pymnt_amnt) AS [Last_Payment_Amount]
+FROM LoanData
+GROUP BY home_ownership
+ORDER BY SUM(last_pymnt_amnt) DESC;
+
+
+--================================================================
+-- Risk & Credit Analysis KPIs
+--================================================================
+
+--Default Rate by Loan Grade: 
+-- high default rate means high risk 
+SELECT
+    grade,
+    sub_grade,
+    total_loans,
+    defaulted_loans,
+    -- Calculate the final default rate as a decimal (e.g., 0.14 for 14%)
+    (CAST(defaulted_loans AS FLOAT) / total_loans) AS default_rate
+FROM
+    (
+        SELECT
+            grade,
+            sub_grade,
+            COUNT(id) AS total_loans,
+            SUM(CASE WHEN loan_status = 'Charged Off' THEN 1 ELSE 0 END) AS defaulted_loans
+        FROM
+            LoanData -- Running on clean data
+        GROUP BY
+            grade,
+            sub_grade
+    ) AS LoanCounts 
+ORDER BY
+    default_rate DESC;
+                
+
+-- Calculate default rate for each loan purpose and compare to the overall average and rank accordingly 
+select 
+    purpose, 
+    total_Loans, 
+    defaulted_loans,
+    purpose_default_rate,
+    overall_average_default_rate, 
+    (purpose_default_rate - overall_average_default_rate) as diff,
+    rank() over(order by (purpose_default_rate - overall_average_default_rate)) as rank_of_pupose_default_rate
+from (
+        SELECT
+            purpose,
+            COUNT(id) AS total_loans,
+            SUM(CASE WHEN loan_status = 'Charged Off' THEN 1 ELSE 0 END) AS defaulted_loans,
+            -- This is the default rate for each specific purpose as a decimal
+            (CAST(SUM(CASE WHEN loan_status = 'Charged Off' THEN 1 ELSE 0 END) AS FLOAT) / COUNT(id)) AS purpose_default_rate,
+            -- This scalar subquery calculates the overall average default rate for the entire table
+            (
+                SELECT (CAST(SUM(CASE WHEN loan_status = 'Charged Off' THEN 1 ELSE 0 END) AS FLOAT) / COUNT(id)) 
+                FROM LoanData -- Running on clean data
+            ) AS overall_average_default_rate
+        FROM
+            LoanData -- Running on clean data
+        GROUP BY
+            purpose
+    ) AS t;
+
+
+ --Business Question: How predictive is a borrower's past payment behavior on their future loan performance?
+ -- Note: This query now works because 'delinq_2yrs' is in the 'LoanData' table.
+SELECT
+    delinquency_group,
+    COUNT(*) AS number_of_loans,
+    (CAST(SUM(CASE WHEN loan_status = 'Charged Off' THEN 1 ELSE 0 END) AS FLOAT) / COUNT(*)) AS default_rate
+FROM
+    (
+        -- Subquery to create the delinquency groups
+        SELECT
+            id,
+            loan_status,
+            CASE
+                WHEN delinq_2yrs = 0 THEN '0 Delinquencies'
+                WHEN delinq_2yrs = 1 THEN '1 Delinquency'
+                ELSE '2+ Delinquencies'
+            END AS delinquency_group
+        FROM
+            LoanData -- Running on clean data
+    ) AS DelinquencyData
+GROUP BY
+    delinquency_group
+ORDER BY
+    delinquency_group;
